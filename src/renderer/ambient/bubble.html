@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <title>AionUi Ambient Bubble</title>
     <style>
-      * {
+      /* ── Reset ──────────────────────────────────────────────────────── */
+      *,
+      *::before,
+      *::after {
         margin: 0;
         padding: 0;
         box-sizing: border-box;
@@ -18,11 +21,18 @@
         user-select: none;
         -webkit-user-select: none;
       }
-      body {
+
+      /* ── State: bubble (M1) ─────────────────────────────────────────── */
+      body.state-bubble {
         display: flex;
         align-items: center;
         justify-content: center;
       }
+      body.state-input {
+        display: block;
+      }
+
+      /* ── Bubble circle ──────────────────────────────────────────────── */
       .ambient-bubble {
         width: 56px;
         height: 56px;
@@ -41,17 +51,268 @@
         font-size: 20px;
         font-weight: 600;
         letter-spacing: 0.5px;
+        flex-shrink: 0;
       }
       .ambient-bubble.dragging {
         cursor: grabbing;
       }
-      .ambient-bubble::after {
-        content: '';
+
+      /* ── State visibility guards ────────────────────────────────────── */
+      body.state-input .ambient-bubble {
+        display: none;
+      }
+      body.state-bubble .ambient-input-panel {
+        display: none;
+      }
+
+      /* ── Input panel (M2) ───────────────────────────────────────────── */
+      .ambient-input-panel {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px 12px;
+        background: rgba(18, 18, 28, 0.93);
+        backdrop-filter: blur(24px) saturate(200%);
+        -webkit-backdrop-filter: blur(24px) saturate(200%);
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        box-shadow:
+          0 8px 32px rgba(0, 0, 0, 0.45),
+          0 2px 8px rgba(0, 0, 0, 0.3);
+        animation: expandIn 200ms ease-out both;
+      }
+
+      @keyframes expandIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px) scale(0.97);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* ── Suggestions row ────────────────────────────────────────────── */
+      .ambient-suggestions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .ambient-suggestion {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 9px;
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.78);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        font-size: 11.5px;
+        cursor: pointer;
+        transition:
+          background 120ms,
+          border-color 120ms;
+        white-space: nowrap;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .ambient-suggestion:hover {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: #fff;
+      }
+
+      /* ── Compose row ────────────────────────────────────────────────── */
+      .ambient-compose {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        flex: 1;
+        min-height: 0;
+      }
+      .ambient-textarea {
+        flex: 1;
+        min-height: 28px;
+        max-height: 120px; /* 6 rows × ~20px */
+        padding: 5px 10px;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: rgba(255, 255, 255, 0.92);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        font-size: 13px;
+        line-height: 20px;
+        resize: none;
+        overflow-y: hidden; /* toggled to auto when content exceeds 6 rows */
+        outline: none;
+        caret-color: #4470ff;
+        transition: border-color 150ms;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      .ambient-textarea::placeholder {
+        color: rgba(255, 255, 255, 0.3);
+      }
+      .ambient-textarea:focus {
+        border-color: rgba(68, 112, 255, 0.55);
+      }
+      .ambient-send-btn {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        border: none;
+        background: #4470ff;
+        color: #fff;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        transition: background 120ms;
+      }
+      .ambient-send-btn:hover {
+        background: #5580ff;
+      }
+      .ambient-send-btn:disabled {
+        background: rgba(68, 112, 255, 0.3);
+        cursor: not-allowed;
+      }
+
+      /* ── Attachments list ───────────────────────────────────────────── */
+      .ambient-attachments {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .ambient-attachments[hidden] {
+        display: none;
+      }
+      .ambient-attachment {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 7px;
+        border-radius: 5px;
+        background: rgba(68, 112, 255, 0.2);
+        border: 1px solid rgba(68, 112, 255, 0.35);
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 11px;
+        max-width: 160px;
+      }
+      .att-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 110px;
+      }
+      .att-remove {
+        background: none;
+        border: none;
+        color: rgba(255, 255, 255, 0.5);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+        padding: 0 1px;
+        flex-shrink: 0;
+      }
+      .att-remove:hover {
+        color: #fff;
+      }
+
+      /* ── Drag-over highlight ────────────────────────────────────────── */
+      .ambient-input-panel.drag-over {
+        border-color: rgba(68, 112, 255, 0.6);
+        background: rgba(18, 18, 28, 0.96);
+      }
+
+      /* ── Error toast ────────────────────────────────────────────────── */
+      .ambient-error {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        font-size: 11px;
+        color: rgba(255, 100, 100, 0.9);
+        padding: 0 2px;
+      }
+      .ambient-error[hidden] {
+        display: none;
       }
     </style>
   </head>
-  <body>
+  <body class="state-bubble">
+    <!-- ── M1: Bubble state ──────────────────────────────────────────── -->
     <div class="ambient-bubble" data-testid="ambient-bubble">AI</div>
+
+    <!-- ── M2: Input state ──────────────────────────────────────────── -->
+    <div class="ambient-input-panel" data-testid="ambient-input">
+      <!-- AC-M2-2: ≥3 suggested prompts -->
+      <div class="ambient-suggestions" data-testid="ambient-suggestions">
+        <button
+          class="ambient-suggestion"
+          data-action="show_history"
+          data-text="看看我最近的聊天"
+          data-testid="ambient-suggestion-0"
+        >
+          📜 看看我最近的聊天
+        </button>
+        <button
+          class="ambient-suggestion"
+          data-action="switch_coding"
+          data-text="进入写代码模式"
+          data-testid="ambient-suggestion-1"
+        >
+          💻 进入写代码模式
+        </button>
+        <button
+          class="ambient-suggestion"
+          data-action="open_llm_settings"
+          data-text="配置一下 LLM"
+          data-testid="ambient-suggestion-2"
+        >
+          🔧 配置一下 LLM
+        </button>
+        <button
+          class="ambient-suggestion"
+          data-action="new_chat"
+          data-text="开始新对话"
+          data-testid="ambient-suggestion-3"
+        >
+          🎯 开始新对话
+        </button>
+      </div>
+
+      <!-- Compose row -->
+      <div class="ambient-compose">
+        <textarea
+          class="ambient-textarea"
+          data-testid="ambient-textarea"
+          placeholder="和 AI 说点什么…"
+          rows="1"
+          aria-label="Message input"
+        ></textarea>
+        <button class="ambient-send-btn" data-testid="ambient-send-btn" aria-label="Send" disabled>
+          <!-- Simple arrow icon -->
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M7 1.5L12.5 7L7 12.5M12.5 7H1.5"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <!-- AC-M2-5: file attachment chips -->
+      <div class="ambient-attachments" data-testid="ambient-attachments" hidden></div>
+
+      <!-- AC-M2-8: unsupported file error -->
+      <div class="ambient-error" data-testid="ambient-error" hidden></div>
+    </div>
+
     <script type="module" src="./bubbleRenderer.ts"></script>
   </body>
 </html>

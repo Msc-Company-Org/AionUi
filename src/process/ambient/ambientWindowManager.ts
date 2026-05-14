@@ -14,17 +14,30 @@
  *   - Drops pet-specific concepts: state machine, idle ticker, hit-test
  *     window, confirm bubble. The ambient bubble is a single window; clicks
  *     are detected in renderer and routed via IPC.
- *   - Implements AC-M1-1/2/3/4/5/6/9/10/11/13 for the M1 skeleton. M2+ (hover,
- *     chat, panels) will layer on top without replacing this manager.
+ *   - Implements AC-M1-1/2/3/4/5/6/9/10/11/13 for the M1 skeleton.
+ *   - M2 (hover-expand, input state, file attach, collapse) layered on top:
+ *     expandToInput / collapseToBubble + computeInputBounds (exported for unit tests).
  */
+import type { AttachmentInfo } from '../../renderer/ambient/ambient.d';
+import {
+  BUBBLE_SIZE as _BUBBLE_SIZE,
+  SCREEN_MARGIN as _SCREEN_MARGIN,
+  INPUT_WIDTH as _INPUT_WIDTH,
+  INPUT_HEIGHT as _INPUT_HEIGHT,
+  computeInputBounds as _computeInputBounds,
+} from './ambientGeometry';
+
+// Re-export so existing tests / E2E helpers can import from one place.
+export { computeInputBounds } from './ambientGeometry';
+export const BUBBLE_SIZE = _BUBBLE_SIZE;
+export const SCREEN_MARGIN = _SCREEN_MARGIN;
+export const INPUT_WIDTH = _INPUT_WIDTH;
+export const INPUT_HEIGHT = _INPUT_HEIGHT;
 
 import path from 'node:path';
 import fs from 'node:fs';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import { ProcessConfig } from '@process/utils/initStorage';
-
-export const BUBBLE_SIZE = 64;
-export const SCREEN_MARGIN = 24;
 const DRAG_TICK_MS = 16;
 // Main-process safety watchdog: if drag-end never arrives within this window
 // (renderer dropped pointerup — happens on Windows transparent + frameless
@@ -59,6 +72,12 @@ function resolveOutDir(): string {
 const OUT_DIR = resolveOutDir();
 const PRELOAD_DIR = path.join(OUT_DIR, 'preload');
 const RENDERER_DIR = path.join(OUT_DIR, 'renderer', 'ambient');
+
+/** M1–M2 state machine. 'chat' is reserved for M3. */
+type AmbientState = 'bubble' | 'input';
+let currentState: AmbientState = 'bubble';
+/** Bubble position saved just before M2 expand; restored on collapse. */
+let preDragBubblePos: { x: number; y: number } | null = null;
 
 let bubbleWindow: BrowserWindow | null = null;
 let dragTimer: ReturnType<typeof setInterval> | null = null;
@@ -208,6 +227,8 @@ export async function createAmbientWindow(): Promise<void> {
   // nearest side and clamp y. The drag timer path sets `suppressExternalMoveHandler`
   // so this handler doesn't fight with live drag updates.
   bubbleWindow.on('move', handleExternalMove);
+  // Begin in non-focusable mode; M2 expand will enable it.
+  bubbleWindow.setFocusable(false);
 
   bubbleWindow.on('closed', () => {
     destroyAmbientWindow();
@@ -252,12 +273,20 @@ function registerIpcHandlers(): void {
   ipcMain.on('ambient:drag-start', handleDragStart);
   ipcMain.on('ambient:drag-end', handleDragEnd);
   ipcMain.on('ambient:click', handleClick);
+  // M2
+  ipcMain.on('ambient:hover-expand', handleHoverExpand);
+  ipcMain.on('ambient:collapse', handleCollapseRequest);
+  ipcMain.on('ambient:submit', handleSubmit);
 }
 
 function unregisterIpcHandlers(): void {
   ipcMain.removeListener('ambient:drag-start', handleDragStart);
   ipcMain.removeListener('ambient:drag-end', handleDragEnd);
   ipcMain.removeListener('ambient:click', handleClick);
+  // M2
+  ipcMain.removeListener('ambient:hover-expand', handleHoverExpand);
+  ipcMain.removeListener('ambient:collapse', handleCollapseRequest);
+  ipcMain.removeListener('ambient:submit', handleSubmit);
 }
 
 function handleDragStart(): void {
@@ -301,9 +330,81 @@ function handleDragEnd(): void {
 }
 
 function handleClick(): void {
-  // M2 not yet implemented. Log the click so QA can verify the round-trip
-  // works; M2 impl will replace this with the input-state transition.
-  console.info('ambient: click, will expand');
+  // AC-M1-8 / AC-M2-1: click on bubble triggers M2 expand (same as hover).
+  if (currentState === 'bubble') expandToInput();
+}
+
+// ── M2: Input state ────────────────────────────────────────────────────────
+
+function handleHoverExpand(): void {
+  // Ignore if a drag is in progress (renderer shouldn't send this, but guard anyway).
+  if (dragTimer) return;
+  if (currentState !== 'bubble') return;
+  expandToInput();
+}
+
+function expandToInput(): void {
+  const win = getBubbleWindow();
+  if (!win || currentState !== 'bubble') return;
+
+  const [bx, by] = win.getPosition();
+  const center = { x: Math.round(bx + BUBBLE_SIZE / 2), y: Math.round(by + BUBBLE_SIZE / 2) };
+  const display = screen.getDisplayNearestPoint(center);
+  const { workArea } = display;
+
+  // Save bubble position so we can restore it on collapse.
+  preDragBubblePos = { x: bx, y: by };
+
+  const inputBounds = _computeInputBounds(bx, by, workArea);
+
+  currentState = 'input';
+  suppressExternalMoveHandler = true;
+  win.setBounds(inputBounds, false);
+  suppressExternalMoveHandler = false;
+
+  // Allow keyboard input and bring window to front for M2.
+  win.setFocusable(true);
+  win.focus();
+  win.setHasShadow(true);
+
+  win.webContents.send('ambient:state-changed', { state: 'input' });
+  console.log('[Ambient] Expanded to input state at', inputBounds);
+}
+
+function handleCollapseRequest(): void {
+  if (currentState !== 'input') return;
+  collapseToBubble();
+}
+
+export function collapseToBubble(): void {
+  const win = getBubbleWindow();
+  if (!win) return;
+
+  currentState = 'bubble';
+
+  // Restore pre-expand bubble position (already snapped to an edge).
+  const restore = preDragBubblePos ?? computeDefaultPosition();
+  preDragBubblePos = null;
+
+  suppressExternalMoveHandler = true;
+  win.setBounds({ x: restore.x, y: restore.y, width: BUBBLE_SIZE, height: BUBBLE_SIZE }, false);
+  suppressExternalMoveHandler = false;
+
+  win.setFocusable(false);
+  win.setHasShadow(false);
+
+  win.webContents.send('ambient:state-changed', { state: 'bubble' });
+  console.log('[Ambient] Collapsed to bubble state');
+}
+
+function handleSubmit(_evt: Electron.IpcMainEvent, payload: { text: string; attachments: AttachmentInfo[] }): void {
+  // M3 stub. Log receipt so E2E tests can observe via main-process evaluate.
+  console.info(
+    '[Ambient] submit received — M3 not yet implemented.',
+    `text.length=${payload.text.length}`,
+    `attachments=${payload.attachments.length}`
+  );
+  // TODO(M3): expand to chat state, initialise conversation engine.
 }
 
 function clearDragTimer(): void {
@@ -377,6 +478,7 @@ function snapAndPersist(win: BrowserWindow): void {
 function handleExternalMove(): void {
   if (suppressExternalMoveHandler) return;
   if (dragTimer) return; // live drag owns position; don't fight it
+  if (currentState !== 'bubble') return; // M2 input panel must not snap
   const win = getBubbleWindow();
   if (!win) return;
   // Any external move represents a "drop" from the user's perspective — the
